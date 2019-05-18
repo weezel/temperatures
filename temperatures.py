@@ -1,8 +1,5 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
-activate_this = '/home/weezel/apps/temperatures/bin/activate_this.py'
-execfile(activate_this, dict(__file__=activate_this))
 
 import datetime
 from itertools import groupby
@@ -55,7 +52,8 @@ def n_days(date_temp_list=[], default_days=1):
         return
 
     minus_days = datetime.datetime.now() - datetime.timedelta(days=default_days)
-    n_day_items = [val for i, val in enumerate(date_temp_list) if val.date >= minus_days and i % 10 == 0]
+    n_day_items = [val for i, val in enumerate(date_temp_list) \
+                        if val.date >= minus_days]
     n1date = mdates.date2num([i.date for i in n_day_items])
     plt.figure(2)
     plt.plot_date(n1date, [i.temperature for i in n_day_items], fmt="r-", tz=None, xdate=True)
