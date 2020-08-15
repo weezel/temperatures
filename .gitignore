@@ -1,3 +1,9 @@
+*.idea/
+*.log
+*.png
+*.pyc
 bin/
 include/
 lib/
+temperatures.conf
+temperatures.db

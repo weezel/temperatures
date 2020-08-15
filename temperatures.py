@@ -1,83 +1,99 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import datetime
-from itertools import groupby
-from collections import OrderedDict
+import logging
+import os
+import sqlite3
+import sys
+import time
 
-import numpy as np
-import matplotlib.dates as mdates
-import matplotlib.pyplot as plt
-import matplotlib.ticker as plticker
-import matplotlib.ticker as ticker
-from matplotlib.ticker import MaxNLocator
+import requests
+
+import external
 
 
-class DateTemp(object):
-    def __init__(self, date, temperature):
-        self.date = date
-        self.temperature = temperature
+def retrieve_values(url: str, room: str) -> dict:
+    logging.info(f"Retrieving stats for {room}")
+    try:
+        values = requests.get(url)
+        doc = values.content.decode("utf-8").split("\n")
+        temp_degC, humidity, pressure = \
+            [i.split(";") for i in doc if "degC" in i][0]
+        temp_degC = float(temp_degC.split(" ")[0])
+        humidity = float(humidity.rstrip("%"))
+        pressure = float(pressure.split(" ")[0])
 
-    def __repr__(self):
-        return "%s %s°C" % (self.date, self.temperature)
+        room_stats = f"{room}: " \
+                     f"{temp_degC}degC " \
+                     f"{humidity}% " \
+                     f"{pressure}hPa"
+        logging.info(room_stats)
 
-def parse_date(s):
-    return datetime.datetime.strptime(s, "%Y-%m-%d_%H:%M")
+        return {
+            room: {
+                "temperature": temp_degC,
+                "humidity": humidity,
+                "pressure": pressure
+            }
+        }
+    except Exception as e:
+        logging.error(f"Couldn't retrieve temperature for {room}: {e}")
 
-def all_time(date_temp_list=[]):
-    if len(date_temp_list) < 1:
-        print("Zero length date_temp_list in all_time() function")
-        return
 
-    days_avg = groupby(date_temp_list, \
-            key=lambda x: x.date.strftime("%Y-%m-%d"))
-    d = OrderedDict()
-    for i in days_avg:
-        day_all = [t.temperature for t in i[1]]
-        day_avg = round(sum(day_all) / float(len(day_all)), 2)
-        d[i[0]] = day_avg
+def time_now():
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime())
 
-    days = mdates.date2num([datetime.datetime.strptime(i, "%Y-%m-%d") \
-                            for i in d.keys()])
-    plt.figure(1)
-    plt.plot_date(days, d.values(), fmt="r-", tz=None, xdate=True)
-    plt.xticks(rotation="vertical")
-    plt.tight_layout()
-    plt.grid()
-    plt.savefig("/var/www/htdocs/temperature/all_days.png")
 
-def n_days(date_temp_list=[], default_days=1):
-    if len(date_temp_list) < 1:
-        print("Zero length date_temp_list in n_days() function")
-        return
+def create_db_schema(cur: sqlite3.Cursor, room_name: str):
+    c = f"CREATE TABLE IF NOT EXISTS {room_name} (" \
+        "datetime TEXT," \
+        "temperature REAL," \
+        "humidity REAL," \
+        "pressure REAL);"
+    cur.execute(c)
 
-    minus_days = datetime.datetime.now() - datetime.timedelta(days=default_days)
-    n_day_items = [val for i, val in enumerate(date_temp_list) \
-                        if val.date >= minus_days]
-    n1date = mdates.date2num([i.date for i in n_day_items])
-    plt.figure(2)
-    plt.plot_date(n1date, [i.temperature for i in n_day_items], fmt="r-", tz=None, xdate=True)
-    plt.xticks(rotation="vertical")
-    plt.gca().xaxis.set_major_locator(MaxNLocator(nbins=30))
-    plt.tight_layout()
-    plt.grid()
-    plt.savefig("/var/www/htdocs/temperature/ndays.png")
 
-def init():
-    with open("/home/weezel/temperatures.txt", "r") as f:
-        date_temp_list = list()
+def main(argv: list) -> None:
+    conf_abs_path = os.path.abspath(argv[1])
+    if not os.path.exists(conf_abs_path):
+        logging.error("Failed to load config file")
+        sys.exit(1)
+    app_dir = os.path.dirname(conf_abs_path)
 
-        for line in f.readlines():
-            splt = line.rstrip("\n").split(" ")
+    logging.basicConfig(filename=os.path.join(app_dir, "temperatures.log"),
+                        datefmt="%Y-%m-%d %H:%M:%S",
+                        format="%(asctime)s %(levelname)s: %(message)s",
+                        level=logging.INFO)
 
-            date = parse_date(splt[0])
-            temperature = float(splt[1])
-            dt = DateTemp(date, temperature)
-            date_temp_list.append(dt)
-        return date_temp_list
+    config = external.read_config_file(conf_abs_path)
+
+    configured_rooms = config["rooms"]
+
+    with sqlite3.connect(os.path.join(app_dir, "temperatures.db")) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        for room, url in configured_rooms.items():
+            room_stats = retrieve_values(url, room)
+
+            room_name = " ".join(room_stats.keys()).rstrip(" ")
+            create_db_schema(cur, room_name)
+            conn.commit()
+
+            q = f"INSERT OR IGNORE INTO {room_name} " \
+                "(datetime, temperature, humidity, pressure) " \
+                "VALUES (?, ?, ?, ?);"
+            logging.info("Adding values to DB")
+            cur.execute(q, [time_now(),
+                            room_stats[room_name]["temperature"],
+                            room_stats[room_name]["humidity"],
+                            room_stats[room_name]["pressure"]])
+            logging.info("Done")
+
 
 if __name__ == '__main__':
-    date_temps = init()
+    if len(sys.argv) < 2:
+        print(f"ERROR: {sys.argv[0]}: give configuration as an argument")
+        sys.exit(1)
 
-    n_days(date_temps, 3)
-    all_time(date_temps)
+    main(sys.argv)
